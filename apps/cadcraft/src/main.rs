@@ -2,6 +2,8 @@
 //!
 //! Usage: `cadcraft [--control <port>] [--sample] [files…]`
 //!
+//! Tools ▸ MCP Server starts and stops the same control server from inside the app.
+//!
 //! `--control <port>` (or `CADCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control server:
 //! `{"id":1,"method":"cmdline.input","params":{"text":"circle 0,0 5"}}` → `{"id":1,"ok":true,…}`.
 //! See `cadcraft_ui_egui::control` for the methods.
@@ -126,7 +128,8 @@ pub fn install_io() {
     });
 }
 
-fn services() -> Services {
+/// `ctx`: repainted when a control request arrives.
+fn services(ctx: egui::Context) -> Services {
     Services {
         pick_open: Some(Box::new(|| {
             rfd::FileDialog::new()
@@ -143,6 +146,7 @@ fn services() -> Services {
                 .save_file()
                 .map(|p| p.to_string_lossy().to_string())
         })),
+        start_control: Some(Box::new(move |port| control_server::start(port, ctx.clone()))),
     }
 }
 
@@ -308,7 +312,7 @@ fn main() -> eframe::Result {
         "CADCraft",
         options,
         Box::new(move |cc| {
-            let mut app = CadApp::new(Session::empty(), services());
+            let mut app = CadApp::new(Session::empty(), services(cc.egui_ctx.clone()));
             let (workspace, restored, workspace_error) = workspace::Workspace::load();
             if let Some(ui) = restored {
                 app.ui = ui;
@@ -346,9 +350,12 @@ fn main() -> eframe::Result {
             if let Some(rs) = &cc.wgpu_render_state {
                 app.set_wgpu(rs, eframe::egui_wgpu::depth_format_from_bits(0, STENCIL_BITS));
             }
-            if let Some(port) = control_port {
-                let rx = control_server::start(port, cc.egui_ctx.clone());
-                app = app.with_control(rx);
+            // `--control` wins over Tools ▸ MCP Server ▸ Start when CADCraft opens.
+            if let Some(port) = control_port.or(app.mcp.launch_port())
+                && let Err(e) = app.start_control(port)
+            {
+                log::error!("control server: {e}");
+                app.set_status(format!("MCP server: {e}"));
             }
             if sample {
                 let _ = app.run("ui.sample", serde_json::json!({}));

@@ -13,6 +13,13 @@ cadcraft --control 7979 &
 cadcraft-cli mcp --connect 127.0.0.1:7979
 ```
 
+Or, in the app, **Tools ▸ MCP Server...**: switch the server on, pick its port, choose
+whether it starts when CADCraft opens, and copy the client configuration (or the
+`claude mcp add` command) it shows. The same switch is the `ui.mcp` command
+(`{"on": true, "port": 7979, "atLaunch": true}`, every field optional). `--control` at launch
+takes precedence over the saved choice. The server listens on `127.0.0.1` only; while it is on,
+any program on the computer can drive the app.
+
 An MCP client usually starts its servers when it starts, often before the app is open. With
 `--lazy` the bridge starts anyway and reaches the app at the first tool call; until the app answers,
 each call fails with a message saying how to open it. `--launch` also opens CADCraft (macOS) with

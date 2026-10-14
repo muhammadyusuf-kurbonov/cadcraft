@@ -35,6 +35,7 @@ pub mod i18n;
 pub mod icons;
 pub mod layers;
 pub mod managers;
+pub mod mcp;
 pub mod menus;
 pub mod opening;
 pub mod options;
@@ -188,6 +189,8 @@ impl Default for UiState {
 pub struct Services {
     pub pick_open: Option<Box<dyn Fn() -> Option<String>>>,
     pub pick_save: Option<Box<dyn Fn(&str) -> Option<String>>>,
+    /// Starts the loopback control channel MCP clients connect through ([`mcp`]).
+    pub start_control: Option<mcp::StartControl>,
 }
 
 pub struct CadApp {
@@ -203,6 +206,8 @@ pub struct CadApp {
     pub canvas: canvas::CanvasState,
     /// Desktop HID status and navigation preferences; the web host supplies no HID backend.
     pub spacemouse: spacemouse::State,
+    /// Tools ▸ MCP Server: the control channel's settings and state.
+    pub mcp: mcp::State,
     pub cmd: cmdline::CmdLine,
     pub status: Option<(String, f64)>,
     /// Drawings being read on worker threads ([`opening`]).
@@ -256,6 +261,7 @@ impl CadApp {
             services,
             canvas: canvas::CanvasState::default(),
             spacemouse: spacemouse::State::default(),
+            mcp: mcp::State::default(),
             cmd: cmdline::CmdLine::default(),
             status: None,
             opening: opening::Opening::default(),
@@ -373,6 +379,9 @@ impl CadApp {
         if self.spacemouse.settings != spacemouse::Settings::default() {
             prefs["spacemouse"] = json!(self.spacemouse.settings);
         }
+        if let Some(mcp) = self.mcp.prefs() {
+            prefs["mcp"] = mcp;
+        }
         if !self.ui.recent_files.is_empty() {
             prefs["recentFiles"] = json!(self.ui.recent_files);
         }
@@ -384,6 +393,9 @@ impl CadApp {
         let Ok(v) = serde_json::from_str::<Value>(json) else { return };
         if let Some(prefs) = v.get("spacemouse") {
             let _ = self.spacemouse.load_settings(prefs);
+        }
+        if let Some(prefs) = v.get("mcp") {
+            self.mcp.load_prefs(prefs);
         }
         if let Some(t) = v.get("theme").and_then(Value::as_str).and_then(theme::ThemePref::parse) {
             self.ui.theme = t;
@@ -646,6 +658,7 @@ impl CadApp {
 
     fn drain_control(&mut self, ctx: &egui::Context) {
         let Some(rx) = self.control_rx.take() else { return };
+        let generation = self.mcp.generation;
         while let Ok(req) = rx.try_recv() {
             // Timed out while queued: the client was told it did not run (#345).
             if !req.begin() {
@@ -664,6 +677,10 @@ impl CadApp {
                 }
             }
             ctx.request_repaint();
+            // A request switched the server off or moved it: the old requests go with it.
+            if self.mcp.generation != generation {
+                return;
+            }
         }
         self.control_rx = Some(rx);
     }

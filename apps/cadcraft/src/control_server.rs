@@ -7,11 +7,12 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{Sender, channel};
 use std::time::Duration;
 
 use cadcraft_ui_egui::ControlRequest;
+use cadcraft_ui_egui::mcp::ControlServer;
 use serde_json::{Value, json};
 
 /// Longest accepted request line (bytes, without the newline). Generous, so requests that carry
@@ -20,18 +21,27 @@ const MAX_LINE: usize = 256 * 1024 * 1024;
 /// Connections served at once; further ones get an error line and are closed.
 const MAX_CONNECTIONS: usize = 16;
 
-pub fn start(port: u16, ctx: egui::Context) -> Receiver<ControlRequest> {
+/// Listen on `127.0.0.1:port` (`0`: any free port). The requests arrive on the returned
+/// receiver; `stop` closes the listener (connections already open end at their next request,
+/// when the receiver is gone).
+pub fn start(port: u16, ctx: egui::Context) -> Result<ControlServer, String> {
     let (tx, rx) = channel::<ControlRequest>();
-    let listener = match TcpListener::bind(("127.0.0.1", port)) {
-        Ok(l) => l,
-        Err(e) => {
-            log::error!("control server failed to bind 127.0.0.1:{port}: {e}");
-            return rx;
-        }
-    };
+    let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|e| format!("cannot listen on 127.0.0.1:{port}: {e}"))?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     log::info!("control server listening on 127.0.0.1:{port}");
-    std::thread::spawn(move || accept_loop(listener, tx, ctx));
-    rx
+    let stopped = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stopped);
+    std::thread::Builder::new()
+        .name("control server".into())
+        .spawn(move || accept_loop(listener, tx, ctx, &flag))
+        .map_err(|e| format!("cannot start the control server: {e}"))?;
+    let stop = Box::new(move || {
+        stopped.store(true, Ordering::SeqCst);
+        // Wake the accept loop so it sees the flag and drops the listener.
+        let _ = TcpStream::connect_timeout(&(std::net::Ipv4Addr::LOCALHOST, port).into(), Duration::from_millis(500));
+        log::info!("control server on 127.0.0.1:{port} stopped");
+    });
+    Ok(ControlServer { requests: rx, port, stop })
 }
 
 /// A connection's place among [`MAX_CONNECTIONS`], given back when the connection ends (also when
@@ -44,9 +54,12 @@ impl Drop for Slot {
     }
 }
 
-fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Context) {
+fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Context, stopped: &AtomicBool) {
     let open = Arc::new(AtomicUsize::new(0));
     for mut stream in listener.incoming().flatten() {
+        if stopped.load(Ordering::SeqCst) {
+            break;
+        }
         if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
             open.fetch_sub(1, Ordering::SeqCst);
             let _ = writeln!(stream, "{}", json!({"ok": false, "error": "too many control connections"}));
@@ -163,7 +176,7 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
         let (tx, rx) = channel::<ControlRequest>();
-        std::thread::spawn(move || accept_loop(listener, tx, egui::Context::default()));
+        std::thread::spawn(move || accept_loop(listener, tx, egui::Context::default(), &AtomicBool::new(false)));
         std::thread::spawn(move || {
             for req in rx {
                 let _ = req.reply.send(json!({"ok": true, "method": req.method}));
@@ -198,5 +211,20 @@ mod tests {
         BufReader::new(&mut extra).read_line(&mut line).unwrap();
         assert!(line.contains("too many control connections"), "{line}");
         drop(held);
+    }
+
+    #[test]
+    fn a_stopped_server_frees_its_port() {
+        let ControlServer { requests, port, stop } = start(0, egui::Context::default()).unwrap();
+        assert_ne!(port, 0, "the port the system chose is reported");
+        assert!(TcpStream::connect(("127.0.0.1", port)).is_ok());
+        stop();
+        drop(requests);
+        // The listener closes once the accept loop wakes; then the port can be taken again.
+        let start_at = std::time::Instant::now();
+        while TcpListener::bind(("127.0.0.1", port)).is_err() {
+            assert!(start_at.elapsed() < Duration::from_secs(5), "port {port} still held after stop");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }

@@ -1330,3 +1330,16 @@
 	Justify	За шириною
 	Text color	Колір тексту
 	Click the ruler to add a tab stop, right-click to remove one	Натисніть на лінійку, щоб додати табуляцію; права кнопка видаляє її
+	MCP Server...	Сервер MCP...
+	MCP Server	Сервер MCP
+	Lets AI agents (Claude and other MCP clients) draw, edit and inspect drawings in CADCraft.	Дозволяє ШІ-агентам (Claude та іншим клієнтам MCP) креслити, редагувати й переглядати креслення в CADCraft.
+	The MCP server needs the desktop app.	Сервер MCP працює лише в настільному застосунку.
+	Enable MCP server	Увімкнути сервер MCP
+	Port	Порт
+	Start when CADCraft opens	Запускати разом із CADCraft
+	Listening on 127.0.0.1:{port}	Очікує з'єднань на 127.0.0.1:{port}
+	Running (started with --control)	Працює (запущено з --control)
+	While it is on, any program on this computer can control CADCraft.	Поки сервер увімкнено, будь-яка програма на цьому комп'ютері може керувати CADCraft.
+	Connect an MCP client	Підключення клієнта MCP
+	Add this server to the client's MCP settings:	Додайте цей сервер до налаштувань MCP клієнта:
+	Claude Code:	Claude Code:
